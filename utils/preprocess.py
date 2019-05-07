@@ -1,13 +1,43 @@
+
+# Had to add because the LBP code is run in python 2.7
+from __future__ import division
+
 import pickle
 import numpy as np
+import copy
+from PIL import Image
+
 from sklearn.cluster import KMeans
 from collections import defaultdict
+from numpy.random import binomial, randint
+
+# STRUCTURE OF DATA
+#
+# Each data_batch_* file encodes a dictionary with 2 keys:
+#
+# 'data' -- a 10000x3072 numpy array of uint8s. Each row of the array stores a 32x32 colour image. 
+# The first 1024 entries contain the red channel values, the next 1024 the green, and the final 
+# 1024 the blue. The image is stored in row-major order, so that the first 32 entries of the array 
+# are the red channel values of the first row of the image.
+
+# 'labels' -- a list of 10000 numbers in the range 0-9. The number at index i indicates the label of 
+# the ith image in the array data.
+
+def store(data, file, protocol=3):
+    # Pickles data. 
+    with open(file, 'wb') as fo: 
+        pickle.dump(data, fo, protocol=protocol) 
 
 def unpickle(file):
-    # Unpickle a CIFAR 10 split
-    with open(file, 'rb') as fo:
-        dict = pickle.load(fo, encoding='latin1')
-    return dict
+    # Unpickle a CIFAR 10 split 
+
+    with open(file, 'rb') as fo: 
+	try:
+	    samples = pickle.load(fo)
+	except UnicodeDecodeError:  #python 3.x
+	    fo.seek(0)
+	    samples = pickle.load(fo, encoding='latin1')
+    return samples
 
 def slice_by_color(vectorized_img):
     # Splits the vectorized image into component color vectors
@@ -24,9 +54,12 @@ def vec2mat(vectorized_img):
 
 def render(vectorized_img):
     # Render image for debugging purposes.
-    from PIL import Image
     img_mat = vec2mat(vectorized_img)
+    render_mat(img_mat)
+
+def render_mat(img_mat):
     img = Image.fromarray(img_mat, 'RGB')
+    img.save("blah.png")
     img.show()
 
 def create_cluster_examples(sample_images):
@@ -61,48 +94,34 @@ def colormap(sample_images):
 
     for coord, label in zip(X, kmeans.labels_):
         colormap[tuple(coord)] = cluster_centers[label]
-    return colormap
-
-
-# STRUCTURE OF DATA
-#
-# Each data_batch_* file encodes a dictionary with 2 keys:
-#
-# 'data' -- a 10000x3072 numpy array of uint8s. Each row of the array stores a 32x32 colour image. 
-# The first 1024 entries contain the red channel values, the next 1024 the green, and the final 
-# 1024 the blue. The image is stored in row-major order, so that the first 32 entries of the array 
-# are the red channel values of the first row of the image.
-
-# 'labels' -- a list of 10000 numbers in the range 0-9. The number at index i indicates the label of 
-# the ith image in the array data.
-
-
-# Step 1: Choose one image per class from the CIFAR-10 dataset of images
-
-data_file = "data/src/cifar-10-batches-py/data_batch_1"
-data_dict = unpickle(data_file)
-
-sample_images = sample_dataset(data_dict)
-
-#  Step 2: For each image, use k-means to reduce the number of colors to 32
-
-cmap = colormap(sample_images)
+    return colormap, cluster_centers
 
 def reduce_images(colormap, sample_images):
+    # Reduces the dimensionality of the color space of the ima
     reduced_images = []
     for image in sample_images.values():
         reduced_image = []
         rv, gv, bv = slice_by_color(image)
         for (r, g, b) in zip(rv, gv, bv):
-            trans_coords = cmap[(r, g, b)]
+            trans_coords = colormap[(r, g, b)]
             reduced_image.append(trans_coords)
         
-        #import pdb; pdb.set_trace()
-        reduced_images.append(np.ravel(np.array(reduced_image)))
+        reduced_images.append(np.ravel(np.array(reduced_image), order='F'))
 
     return reduced_images
 
-reduced_images = reduce_images(cmap, sample_images)
+def add_noise(reduced_images, cluster_centers, p=1/32, low=0, high=32):
+    # Randomly adds noise to images.
+    noised_images = copy.deepcopy(reduced_images[:])
+    noised_images = [vec2mat(image) for image in noised_images]
+    #cluster_centers = np.array(cluster_centers)
+    num_pixels = noised_images[0].shape[0] 
+    for i in range(len(noised_images)):
+        s = binomial(1, p, (num_pixels, num_pixels))
+        np.set_printoptions(threshold=np.inf)
+        num_noise = len(np.where(s>0)[1])
 
-render(reduced_images[2])
+        noised_images[i][np.where(s>0)] = \
+                np.array([cluster_centers[randint(low, high)] for j in range(num_noise)]) #[low, high)
+    return noised_images
 
