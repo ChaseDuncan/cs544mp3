@@ -4,6 +4,8 @@ from __future__ import division
 import numpy as np
 import scipy.linalg as la
 import pickle
+from sklearn.preprocessing import normalize
+
 from utils.preprocess import *
 import factorgraph as fg
 
@@ -27,7 +29,7 @@ cluster_centers = np.array(pickle.load(open(cluster_centers_file, "rb")), dtype=
 #	    [0.1, 0.9],
 #	    ]))
 
-c = 1
+c = 0.1
 max_val = 32
 
 def node_str(i, j):
@@ -39,66 +41,71 @@ def coords(node_str):
     split_name  = node_str.split("-")
     return int(split_name[0]), int(split_name[1])
 
-def init_unary(obs, norm=True, smooth=True):
+def init_unary(obs, norm=True, smooth=True, constant=True):
     # Initialize a vector of unary potentials based on the observed value
     diffs = cluster_centers - obs
     diffs = np.square(diffs)
     diffs = np.sum(diffs, axis=1)
-    if norm:  
-        diffs = diffs / la.norm(diffs)
+
+    if constant:
+        orig_label_idx = np.argmin(diffs)
+        diffs = np.ones(32)
+        diffs[orig_label_idx] = 0
 
     if smooth:
         diffs+=1
         diffs = diffs/(len(diffs))
 
-    return diffs.astype(np.float64)
+    if norm:  
+        diffs = diffs / la.norm(diffs)
+
+    return 1 - diffs.astype(np.float64)
 
 def neighbors(node):
     # Returns the x+1 and y+1 neighbors of nodes encoded as strings
     coord = coords(node)
     return node_str(coord[0]+1, coord[1]), node_str(coord[0], coord[1]+1)
 
-# Make a set of node names where
-nodes = []
-for i in xrange(32):
-    for j in xrange(32):
-        nodes.append(node_str(i,j))
+def denoise(img):
+    g = fg.Graph()
+    # Make a set of node names where
+    nodes = []
+    for i in xrange(32):
+        for j in xrange(32):
+            nodes.append(node_str(i,j))
 
-g = fg.Graph()
-test_img = data[0]
+    for node in nodes:
+        g.rv(node, 32)
+        g.factor([node], potential=init_unary(img[coords(node)], norm=True))
 
-for node in nodes:
-    g.rv(node, 32)
-    g.factor([node], potential=init_unary(test_img[coords(node)], norm=True))
+    pairwise = np.ones((max_val, max_val))*c
+    np.fill_diagonal(pairwise, 1)
+    pairwise = normalize(pairwise, axis=1)
 
-pairwise = np.ones((max_val, max_val))*c
-np.fill_diagonal(pairwise, 0)
-for node in nodes:
-    x_n, y_n = neighbors(node)
-    if x_n in nodes:
-        g.factor([node, x_n], potential=pairwise)
-        #g.factor([x_n, node], potential=pairwise)
-    if y_n in nodes:
-        g.factor([node, y_n], potential=pairwise)
-        #g.factor([y_n, node], potential=pairwise)
+    for node in nodes:
+        x_n, y_n = neighbors(node)
+        if x_n in nodes:
+            g.factor([node, x_n], potential=pairwise)
+        if y_n in nodes:
+            g.factor([node, y_n], potential=pairwise)
 
-# Run (loopy) belief propagation (LBP)
-iters, converged = g.lbp(normalize=True)
-#iters, converged = g.lbp()
-print('LBP ran for %d iterations. Converged = %r' % (iters, converged))
+    # Run (loopy) belief propagation (LBP)
+    iters, converged = g.lbp(normalize=True)
+    print('LBP ran for %d iterations. Converged = %r' % (iters, converged))
 
-# Print out the final messages from LBP
-g.print_messages()
-denoised = np.zeros((32, 32, 3))
-for node, marginals in g.rv_marginals():
-    import pdb; pdb.set_trace()
-    coord = coords(node.name)
-    denoised[coord[0], coord[1], :] = cluster_centers[np.argmin(marginals), :]
+    # Print out the final messages from LBP
+    #g.print_messages()
+    denoised = np.zeros((32, 32, 3))
 
+    for node, marginals in g.rv_marginals():
+        coord = coords(node.name)
+        denoised[coord[0], coord[1], :] = cluster_centers[np.argmax(marginals), :]
 
-denoised = denoised.astype(dtype=np.uint8)
+    return denoised.astype(dtype=np.uint8)
 
-render_mat(denoised)
+for i in range(len(data)):
+    img = data[i]
+    render_mat(img, name="pngs/orig/" + str(i) + ".png")
+    denoised = denoise(img)
+    render_mat(denoised, name="pngs/denoised/" + str(i) + ".png")
 
-# Print out the final marginals
-#g.print_rv_marginals()
